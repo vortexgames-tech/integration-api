@@ -415,6 +415,8 @@ A small number of error codes are treated by Vortex as a successful no-op when t
 
 Partners SHOULD return this code on `/Round/Rollback` when the `reference_transaction_uuid` points to a bet that is already in a refunded state in the partner ledger. Do NOT return it on `/Round/Transaction` — for retried bets/wins follow the standard idempotent-replay contract (HTTP 200 echo of the original response).
 
+**Performance hint — include `meta.balance` in the error envelope.** When the partner returns `TRANSACTION_ALREADY_REFUNDED`, it SHOULD include the player's current balance (decimal-string, currency-scaled per Section 1 → "Currency precision") in `error.meta.balance`. The response body is HMAC-verified before parsing, so the value is trusted: Vortex consumes it directly and skips the otherwise-required follow-up `/Player/Balance` call. This shortens rollback round-trip latency. If `meta.balance` is absent Vortex falls back to an explicit `/Player/Balance` read — correct but slower.
+
 ---
 
 ## Section 5 — Envelope schema (DTO sketch)
