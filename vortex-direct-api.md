@@ -391,7 +391,7 @@ Every error response (HTTP 4xx or 5xx) follows the shape:
 | `INVALID_SIGNATURE` | 401 | KNOWN_ERROR | false | `X-REQUEST-SIGN` did not match HMAC of raw body. |
 | `INVALID_NONCE` | 401 | KNOWN_ERROR | false | `request_uuid` was seen in the last 5 minutes (replay). |
 | `WRONG_PARAMETERS` | 400 | KNOWN_ERROR | false | Schema validation failure, missing required field, unknown enum value, or version mismatch. |
-| `PARTNER_UNAVAILABLE` | 503 | UNKNOWN_ERROR | false | Partner side is unhealthy / downstream wallet failure. Triggers retry + circuit breaker. |
+| `PARTNER_UNAVAILABLE` | 503 | UNKNOWN_ERROR | false | Partner side is unhealthy / downstream wallet failure. Triggers retry per the Section 6 schedule; sustained failures cause Vortex to back off until your endpoint recovers. |
 | `INTERNAL_ERROR` | 500 | UNKNOWN_ERROR | false | Opaque server-side failure on either side. Retry per schedule. |
 | `REQUEST_TIMED_OUT` | 504 | TIMEOUT | false | Request did not complete within the call budget. Retry per TIMEOUT schedule. |
 
