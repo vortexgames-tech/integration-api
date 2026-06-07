@@ -1,9 +1,9 @@
 # Vortex Direct API — Public Specification
 
-**Version**: `1.0.0`
-**Last updated**: 2026-05-20
+**Version**: `1.1.0`
+**Last updated**: 2026-06-07
 **Audience**: backend engineering teams on the operator/wallet side integrating with the Vortex Direct API.
-**Changelog**: see [`CHANGELOG-vortex-direct-api.md`](./CHANGELOG-vortex-direct-api.md) for version history.
+**Changelog**: see [`CHANGELOG.md`](./CHANGELOG.md) for version history.
 
 ---
 
@@ -167,7 +167,7 @@ The contract is two-directional. Endpoints starting with `/v2/operator.*` are ex
 | `/v2/operator.Launcher/Demo` | partner → Vortex | POST | Create demo (play-money) session — test-flagged partners only |
 | `/v2/operator.Catalog/List` | partner → Vortex | POST | Get available games (for partner catalog UI) |
 | `/v2/operator.Round/Details` | partner → Vortex | POST | Get round outcome (player dispute resolution / regulatory bet-history) |
-| `/v2/provider.Player/Balance` | Vortex → partner | POST | Read player balance / validate the active session (`session_id`) |
+| `/v2/provider.Player/Balance` | Vortex → partner | POST | Read player balance / authenticate by `token` (primary credential; `session_id` is a technical correlation id) |
 | `/v2/provider.Round/Transaction` | Vortex → partner | POST | Bet only OR win only (one per call; atomic bet+win is not supported) |
 | `/v2/provider.Round/Rollback` | Vortex → partner | POST | Refund a previously processed bet |
 
@@ -204,12 +204,12 @@ Success response:
 }
 ```
 
-Errors (per Section 4 envelope): `GAME_NOT_AVAILABLE` (400), `CURRENCY_NOT_ALLOWED` (400), `WRONG_PARAMETERS` (400), `INVALID_SIGNATURE` (401), `INVALID_NONCE` (401), `PARTNER_UNAVAILABLE` (503), `INTERNAL_ERROR` (500). Token / account-state errors (`INVALID_TOKEN`, `EXPIRED_TOKEN`, `USER_DISABLED`, `USER_NOT_FOUND`) reach Launcher only when surfaced by the partner's own `Player/Balance` response during launch-time verification, and propagate per Section 4.
+Errors (per Section 4 envelope): `GAME_NOT_AVAILABLE` (400), `CURRENCY_NOT_ALLOWED` (400), `WRONG_PARAMETERS` (400), `INVALID_SIGNATURE` (401), `INVALID_NONCE` (401), `PARTNER_UNAVAILABLE` (503), `INTERNAL_ERROR` (500). **Launch performs no Vortex→partner `/Player/Balance` round-trip** (as of v1.1.0): Vortex trusts the HMAC-signed `balance` in this request and seeds it as the provisional balance, reconciling against your wallet on the first in-game `/Player/Balance`. Consequently token / account-state errors (`INVALID_TOKEN`, `EXPIRED_TOKEN`, `USER_DISABLED`, `USER_NOT_FOUND`) are **no longer surfaced at launch time** — they surface on the first in-game `/Player/Balance` or `/Round/Transaction` call (authenticated by `token`) and propagate per Section 4 there.
 
 #### `POST /v2/operator.Launcher/Demo`
 Create a demo (play-money) session — same request shape and same response shape as `Launcher/Real`. Only partners flagged as test on our side can use this endpoint; production partners hitting `/Demo` receive `WRONG_PARAMETERS`. Whether you have a test-flagged or production partner record is communicated out-of-band at onboarding.
 
-Demo is **not** a no-auth shortcut: Vortex still calls your `POST /v2/provider.Player/Balance` to validate the `token` and read the authoritative balance before returning a `launch_url`. Errors from that round-trip surface in the Launcher response per the standard error envelope. Implement `/Player/Balance` to accept the same token your partner-side launcher would pass to `/Launcher/Demo`.
+As of v1.1.0 launch (Real and Demo) trusts the HMAC-signed `balance` in the `Launcher/*` request and does **not** call your `POST /v2/provider.Player/Balance` before returning a `launch_url` — your `/Player/Balance` need not be reachable at launch time. Vortex seeds the signed `balance` as provisional and reconciles against your wallet on the first in-game `/Player/Balance` call, which authenticates by `token`. Implement `/Player/Balance` to accept the same `token` your partner-side launcher passed to `/Launcher/Demo` (Vortex sends that `token` on the envelope — see "Session identity" below). How you tie the `token` to a session is your choice: Vortex's reference wallet binds `token`→`session_id` lazily on first contact, but a stateless `token` check is equally valid. Either way, **no session pre-registration is required**.
 
 #### `POST /v2/operator.Catalog/List`
 Returns the catalog of games available to this partner.
@@ -268,9 +268,9 @@ For not-yet-finished rounds the `duration_ms` field is computed against the curr
 These are the endpoints the partner MUST implement on their wallet.
 
 #### `POST /v2/provider.Player/Balance`
-Read-only balance check **and active-session validation**. Retry semantics follow the standard `retry_class` taxonomy described in Section 6.
+Read-only balance check **and authentication by `token`**. Retry semantics follow the standard `retry_class` taxonomy described in Section 6.
 
-> **Session identity (read carefully):** The `BalanceEnvelope` carries `account_id` + `session_id`, **not** the raw operator launch token. The launch token is consumed once by `operator.Launcher/*` to mint the session; from then on `session_id` is the identity for every `/v2/provider.*` call. On `Player/Balance` the partner MUST validate that `session_id` is a live, non-expired session for `account_id`, and reject with the appropriate session/account error (`SESSION_NOT_FOUND` / `EXPIRED_TOKEN` / `USER_DISABLED` / `USER_NOT_FOUND`, see Section 4) otherwise. There is no token field on this envelope by design — do not build token-based validation here; validate the session.
+> **Session identity (read carefully — changed in v1.1.0):** The `BalanceEnvelope` (and `TransactionEnvelope` / `RollbackEnvelope`) now carries `token` **as the authentication source of truth**, alongside `account_id` + `session_id`. The partner SHOULD authenticate the `token` (the same operator-issued credential passed to `operator.Launcher/*`) and MAY bind `token`→`session_id` lazily on first contact — **no session pre-registration is required**. `session_id` is retained as a **technical correlation id** for every `/v2/provider.*` call. The previous directive ("there is no token field; validate the session, not the token") is **reversed**: `token` is now present and is the credential you SHOULD validate. The change is **backward-compatible** — `session_id` is still sent on every call, so a partner that continues to validate by `session_id` keeps working; new integrations SHOULD prefer validating `token`. On a token/account problem reject with the appropriate code (`INVALID_TOKEN` / `EXPIRED_TOKEN` / `SESSION_NOT_FOUND` / `USER_DISABLED` / `USER_NOT_FOUND`, see Section 4).
 
 Request envelope: `BalanceEnvelope` (see Section 5).
 ```json
@@ -279,6 +279,7 @@ Request envelope: `BalanceEnvelope` (see Section 5).
   "partner_id":  "vortex-direct-001",
   "account_id":  "player-abc-123",
   "session_id":  "sess-xyz-789",
+  "token":       "<operator-issued session token>",
   "currency":    "EUR"
 }
 ```
@@ -295,6 +296,7 @@ Common envelope (sent on every call):
   "partner_id":   "vortex-direct-001",
   "account_id":   "player-abc-123",
   "session_id":   "sess-xyz-789",
+  "token":        "<operator-issued session token>",
   "currency":     "EUR",
   "game_id":      "cricket_crash",
   "round_id":     "round-12345",
@@ -303,7 +305,7 @@ Common envelope (sent on every call):
 }
 ```
 
-> **Why `account_id` AND `session_id` (and `currency`) on every call?** `session_id` identifies the active session; `account_id` is the player on the partner side; `currency` is the active account currency. They are sent together so the partner can cross-check that the `session_id` truly belongs to `account_id` and that the wire `currency` matches `account.currency` — defense-in-depth against a stolen/replayed session being misused on the wrong account, or a money-movement arriving in the wrong currency. The partner SHOULD reject a request whose `(session_id, account_id, currency)` triple does not match its records (`SESSION_NOT_FOUND` / `USER_NOT_FOUND` / `CURRENCY_NOT_ALLOWED` as appropriate).
+> **Why `token`, `account_id` AND `session_id` (and `currency`) on every call?** `token` is the **primary auth credential** (as of v1.1.0) — the partner authenticates it and binds it to `session_id` on first contact; `session_id` is the technical correlation id for the active session; `account_id` is the player on the partner side; `currency` is the active account currency. They are sent together so the partner can authenticate the `token` AND cross-check that the `session_id`/`account_id`/`currency` match its records — defense-in-depth against a stolen/replayed session being misused on the wrong account, or a money-movement arriving in the wrong currency. The partner SHOULD reject a request whose `token` is invalid (`INVALID_TOKEN` / `EXPIRED_TOKEN`) or whose `(session_id, account_id, currency)` triple does not match its records (`SESSION_NOT_FOUND` / `USER_NOT_FOUND` / `CURRENCY_NOT_ALLOWED` as appropriate).
 
 **Bet** (debit only — round start, `finished: false`):
 ```json
@@ -336,6 +338,7 @@ Refund of a previously processed bet. Separate endpoint to make the operational 
   "partner_id": "vortex-direct-001",
   "account_id": "player-abc-123",
   "session_id": "sess-xyz-789",
+  "token": "<operator-issued session token>",
   "currency": "EUR",
   "game_id": "cricket_crash",
   "round_id": "round-12345",
@@ -372,9 +375,9 @@ Every error response (HTTP 4xx or 5xx) follows the shape:
 
 | api_code | http_status | retry_class | suspend_player | When to use |
 |---|---|---|---|---|
-| `INVALID_TOKEN` | 401 | KNOWN_ERROR | true | Session token is malformed, unknown, or tampered. |
-| `EXPIRED_TOKEN` | 401 | KNOWN_ERROR | true | Session token has expired; player must re-authenticate. |
-| `SESSION_NOT_FOUND` | 404 | KNOWN_ERROR | true | Session id is not recognized (revoked, never existed). |
+| `INVALID_TOKEN` | 401 | KNOWN_ERROR | true | `token` is malformed, unknown, or tampered. Primary auth-failure code as of v1.1.0 (token is the auth credential on Balance/Transaction/Rollback). |
+| `EXPIRED_TOKEN` | 401 | KNOWN_ERROR | true | `token` has expired; player must re-authenticate. |
+| `SESSION_NOT_FOUND` | 404 | KNOWN_ERROR | true | `session_id` is not recognized (revoked, never existed). Note: operators receive `session_id` in the `Launcher/*` response, so a normal first in-game call is never an unknown session. As of v1.1.0 the partner MAY also bind `token`→`session_id` lazily, so a not-yet-seen `session_id` is not by itself an error when the `token` authenticates — return this code only when the `token` is valid but the `session_id` is genuinely revoked/wrong (it carries `suspend_player: true`, forcing a re-launch). |
 | `USER_DISABLED` | 403 | KNOWN_ERROR | true | Player account is disabled by partner (self-exclusion, fraud hold). |
 | `USER_NOT_FOUND` | 404 | KNOWN_ERROR | true | `account_id` does not exist on partner side. |
 | `INSUFFICIENT_FUNDS` | 402 | KNOWN_ERROR | false | Player balance below requested bet amount. Include `meta.balance`. |
@@ -396,6 +399,8 @@ Every error response (HTTP 4xx or 5xx) follows the shape:
 | `REQUEST_TIMED_OUT` | 504 | TIMEOUT | false | Request did not complete within the call budget. Retry per TIMEOUT schedule. |
 
 **Note on suspend_player**: when Vortex receives an error with `suspend_player: true` (the 5 player/session codes), the player's session is invalidated; the partner must issue a new launch URL before that player can play again.
+
+**Note on launch-time errors (changed in v1.1.0)**: launch no longer performs a Vortex→partner `/Player/Balance` round-trip, so the player/session/account codes above (`INVALID_TOKEN`, `EXPIRED_TOKEN`, `SESSION_NOT_FOUND`, `USER_DISABLED`, `USER_NOT_FOUND`) and balance-rejection conditions are **no longer surfaced at `operator.Launcher/*` launch time**. They surface on the first in-game `/Player/Balance` or `/Round/Transaction` call (authenticated by `token`). `Launcher/*` (Real and Demo) itself only emits the launch-validation codes enumerated on `operator.Launcher/Real` in Section 3.1 (`GAME_NOT_AVAILABLE`, `CURRENCY_NOT_ALLOWED`, `WRONG_PARAMETERS`, `INVALID_SIGNATURE`, `INVALID_NONCE`, `PARTNER_UNAVAILABLE`, `INTERNAL_ERROR`).
 
 ### Idempotent replay on duplicate `transaction_uuid`
 
@@ -434,7 +439,8 @@ TransactionEnvelope:
   request_uuid:   uuid     [required] // HTTP correlation; regenerated per attempt
   partner_id:     string   [required] // partner identifier
   account_id:     string   [required] // player on partner side
-  session_id:     string   [required] // partner-issued session id
+  session_id:     string   [required] // technical session correlation id
+  token:          string   [required] // auth credential (source of truth as of v1.1.0); always sent by Vortex and non-empty for every real-money operation; partner authenticates it and binds token→session_id
   currency:       string   [required] // ISO-4217 3-letter code (e.g. "EUR", "USD", "JPY", "BHD")
   game_id:        string   [required] // game identifier (e.g. "cricket_crash")
   round_id:       string   [required] // round identifier on Vortex side
@@ -468,7 +474,8 @@ RollbackEnvelope:
   request_uuid:               uuid    [required]
   partner_id:                 string  [required]
   account_id:                 string  [required]
-  session_id:                 string  [required]
+  session_id:                 string  [required] // technical session correlation id
+  token:                      string  [required] // auth credential (source of truth as of v1.1.0); always sent by Vortex, non-empty for every real-money operation
   currency:                   string  [required] // ISO-4217 3-letter code
   game_id:                    string  [required]
   round_id:                   string  [required]
@@ -483,7 +490,8 @@ BalanceEnvelope:
   request_uuid: uuid    [required]
   partner_id:   string  [required]
   account_id:   string  [required]
-  session_id:   string  [required]
+  session_id:   string  [required] // technical session correlation id
+  token:        string  [required] // auth credential (source of truth as of v1.1.0); always sent by Vortex, non-empty for every real-money operation
   currency:     string  [required] // ISO-4217 3-letter code
 ```
 
@@ -567,7 +575,7 @@ Recommended implementation: persist the dedup record (request `transaction_uuid`
 
 ### `X-Vortex-Version` header
 
-Every request and response carries `X-Vortex-Version: <major>.<minor>.<patch>`. The current version is `1.0.0`.
+Every request and response carries `X-Vortex-Version: <major>.<minor>.<patch>`. The current **wire** version is `1.0.0`, and the v1.1.0 changes do **not** bump it: the `token` field added in v1.1.0 is additive and backwards-compatible, and the wire header is deliberately kept at `1.0.0` so partners validating the header against their supported set (below) are not broken by an unexpected `1.1.0`. The `1.1.0` in this document's header is the **document revision**, a separate axis from the wire-protocol version.
 
 Semantic rules (SemVer-aligned):
 
