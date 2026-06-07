@@ -12,6 +12,28 @@ The spec follows [Semantic Versioning](https://semver.org/):
 
 ---
 
+## v1.1.0 — 2026-06-07
+
+Backwards-compatible MINOR release: `token`-based authentication and unified launch.
+
+### Authentication / envelopes
+
+- **Additive `token` field on `BalanceEnvelope`, `TransactionEnvelope`, and `RollbackEnvelope`.** `token` is now the **authentication source of truth** for in-game money/balance ops — the partner authenticates it and MAY bind `token`→`session_id` lazily on first contact, so **no session pre-registration is required**. `session_id` is retained as a technical correlation id and is still sent on every call, so existing integrations that validate by `session_id` continue to work unchanged; new integrations SHOULD prefer validating `token`. This **reverses** the prior v1.0.0 directive ("there is no token field; validate the session, not the token").
+
+### Launch
+
+- **Launch-time balance verification removed.** `operator.Launcher/Real` and `operator.Launcher/Demo` no longer trigger a Vortex→partner `/Player/Balance` round-trip. Vortex trusts the HMAC-signed `balance` in the launch request, seeds it as the provisional balance, and reconciles against the partner wallet on the first in-game `/Player/Balance` call. The partner's `/Player/Balance` need not be reachable at launch time. Player/session/account errors (`INVALID_TOKEN`, `EXPIRED_TOKEN`, `SESSION_NOT_FOUND`, `USER_DISABLED`, `USER_NOT_FOUND`) are no longer surfaced at launch — they surface on the first in-game call.
+
+### Deprecations
+
+- **Session pre-register (`POST /api/v2/session`) is deprecated.** With lazy `token`→`session_id` binding it is no longer needed; it remains accepted during rollout for backward compatibility and will be removed in a later release.
+
+### Compatibility
+
+- Fully backward-compatible: `token` is additive (covered by the existing body HMAC), `session_id` is still sent everywhere, and the pre-register endpoint still works. No partner action is required; partners SHOULD migrate to validating `token` at their convenience.
+
+---
+
 ## v1.0.0 — 2026-05-20
 
 Initial public release of the Vortex Direct API.
